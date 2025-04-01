@@ -10,18 +10,114 @@
 using namespace std;
 using filesystem::path;
 
-path operator""_p(const char* data, std::size_t sz) {
+path operator""_p(const char* data, size_t sz) {
     return path(data, data + sz);
 }
 
-// напишите эту функцию
-bool Preprocess(const path& in_file, const path& out_file, const vector<path>& include_directories);
+bool ProcessInclude(const path &current_file, ofstream &output, const vector<path> &include_dirs, const path &source_file = "", int source_line = 0) {
+    ifstream input(current_file);
+    if (!input.is_open()) {
+        if (!source_file.empty()) {
+            cout << "unknown include file " << current_file.filename().string() 
+                 << " at file " << source_file.string() 
+                 << " at line " << source_line << endl;
+        }
+        return false;
+    }
 
-string GetFileContents(string file) {
+    static const regex include_local(R"/(\s*#\s*include\s*"([^"]*)"\s*)/");
+    static const regex include_global(R"/(\s*#\s*include\s*<([^>]*)>\s*)/");
+    
+    string line;
+    int line_number = 0;
+    bool success = true;
+
+    while (getline(input, line)) {
+        line_number++;
+        smatch match;
+
+        if (regex_search(line, match, include_local)) {
+            path include_path = match[1].str();
+            path current_dir = current_file.parent_path();
+            path full_path = current_dir / include_path;
+
+            if (!filesystem::exists(full_path)) {
+                bool found = false;
+
+                for (const auto &dir : include_dirs) {
+                    full_path = dir / include_path;
+                    if (filesystem::exists(full_path)) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    cout << "unknown include file " << include_path.string() 
+                         << " at file " << current_file.string() 
+                         << " at line " << line_number << endl;
+                    success = false;
+                    break;
+                }
+            }
+
+            if (!ProcessInclude(full_path, output, include_dirs, current_file, line_number)) {
+                success = false;
+                break;
+            }
+        } else if (regex_search(line, match, include_global)) {
+            path include_path = match[1].str();
+            bool found = false;
+            path full_path;
+
+            for (const auto &dir : include_dirs) {
+                full_path = dir / include_path;
+                if (filesystem::exists(full_path)) {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                cout << "unknown include file " << include_path.string() 
+                     << " at file " << current_file.string() 
+                     << " at line " << line_number << endl;
+                success = false;
+                break;
+            }
+
+            if (!ProcessInclude(full_path, output, include_dirs, current_file, line_number)) {
+                success = false;
+                break;
+            }
+        } else {
+            output << line << endl;
+        }
+    }
+
+    return success;
+}
+
+bool Preprocess(const path& input_file, const path& output_file,
+                const vector<path>& include_dirs) {
+    ifstream input(input_file);
+    if (!input.is_open()) {
+        cout << "Ошибка: Не удалось открыть входной файл: " << input_file.string() << endl;
+        return false;
+    }
+
+    ofstream output(output_file);
+    if (!output.is_open()) {
+        cout << "Ошибка: Не удалось открыть выходной файл: " << output_file.string() << endl;
+        return false;
+    }
+
+    return ProcessInclude(input_file, output, include_dirs);
+}
+
+string GetFileContents(const string& file) {
     ifstream stream(file);
-
-    // конструируем string по двум итераторам
-    return {(istreambuf_iterator<char>(stream)), istreambuf_iterator<char>()};
+    return {istreambuf_iterator<char>(stream), istreambuf_iterator<char>()};
 }
 
 void Test() {
@@ -70,8 +166,8 @@ void Test() {
         file << "// std2\n"s;
     }
 
-    assert((!Preprocess("sources"_p / "a.cpp"_p, "sources"_p / "a.in"_p,
-                                  {"sources"_p / "include1"_p,"sources"_p / "include2"_p})));
+    assert(!Preprocess("sources"_p / "a.cpp"_p, "sources"_p / "a.in"_p,
+                       {"sources"_p / "include1"_p, "sources"_p / "include2"_p}));
 
     ostringstream test_out;
     test_out << "// this comment before include\n"
